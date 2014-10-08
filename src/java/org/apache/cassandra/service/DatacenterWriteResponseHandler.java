@@ -48,10 +48,37 @@ public class DatacenterWriteResponseHandler extends WriteResponseHandler
     @Override
     public void response(MessageIn message)
     {
-        if (message == null || DatabaseDescriptor.getLocalDataCenter().equals(snitch.getDatacenter(message.from)))
+        if (message == null || isLocal(message.from))
         {
             if (responses.decrementAndGet() == 0)
                 signal();
         }
+    }
+
+    @Override
+    protected int totalBlockFor()
+    {
+        // during bootstrap, include pending endpoints (only local here) in the count
+        // or we may fail the consistency level guarantees (see #833)
+        return consistencyLevel.blockFor(keyspace) + countPendingEndPoints();
+    }
+
+    private int countPendingEndPoints()
+    {
+        int count = 0;
+
+        // filter only local pending endpoints
+        for (InetAddress pending : this.pendingEndpoints)
+        {
+            if (isLocal(pending))
+                count++;
+        }
+
+        return count;
+    }
+
+    private boolean isLocal(InetAddress ad)
+    {
+        return DatabaseDescriptor.getLocalDataCenter().equals(snitch.getDatacenter(ad));
     }
 }
