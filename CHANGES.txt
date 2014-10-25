@@ -1,4 +1,31 @@
+2.0.12:
+ * Pig: Remove errant LIMIT clause in CqlNativeStorage (CASSANDRA-8166)
+ * Throw ConfigurationException when hsha is used with the default
+   rpc_max_threads setting of 'unlimited' (CASSANDRA-8116)
+
+
 2.0.11:
+ * Reject conditions on DELETE unless full PK is given (CASSANDRA-6430)
+ * Properly reject the token function DELETE (CASSANDRA-7747)
+ * Force batchlog replay before decommissioning a node (CASSANDRA-7446)
+ * Fix hint replay with many accumulated expired hints (CASSANDRA-6998)
+ * Fix duplicate results in DISTINCT queries on static columns with query
+   paging (CASSANDRA-8108)
+ * Add DateTieredCompactionStrategy (CASSANDRA-6602)
+ * Properly validate ascii and utf8 string literals in CQL queries (CASSANDRA-8101)
+ * (cqlsh) Fix autocompletion for alter keyspace (CASSANDRA-8021)
+ * Create backup directories for commitlog archiving during startup (CASSANDRA-8111)
+ * Reduce totalBlockFor() for LOCAL_* consistency levels (CASSANDRA-8058)
+ * Fix merging schemas with re-dropped keyspaces (CASSANDRA-7256)
+ * Fix counters in supercolumns during live upgrades from 1.2 (CASSANDRA-7188)
+ * Notify DT subscribers when a column family is truncated (CASSANDRA-8088)
+ * Add sanity check of $JAVA on startup (CASSANDRA-7676)
+ * Schedule fat client schema pull on join (CASSANDRA-7993)
+ * Don't reset nodes' versions when closing IncomingTcpConnections
+   (CASSANDRA-7734)
+ * Record the real messaging version in all cases in OutboundTcpConnection
+   (CASSANDRA-8057)
+ * SSL does not work in cassandra-cli (CASSANDRA-7899)
  * Fix potential exception when using ReversedType in DynamicCompositeType
    (CASSANDRA-7898)
  * Better validation of collection values (CASSANDRA-7833)
@@ -34,6 +61,8 @@
  * Fix wrong progress when streaming uncompressed (CASSANDRA-7878)
  * Fix possible infinite loop in creating repair range (CASSANDRA-7983)
  * Fix unit in nodetool for streaming throughput (CASSANDRA-7375)
+ * Do not exit nodetool repair when receiving JMX NOTIF_LOST (CASSANDRA-7909)
+ * Stream to private IP when available (CASSANDRA-8084)
 Merged from 1.2:
  * Don't index tombstones (CASSANDRA-7828)
 

@@ -1890,11 +1890,12 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         {
             for (Map.Entry<InetAddress, Collection<Range<Token>>> entry : rangesToFetch.get(keyspaceName))
             {
-                final InetAddress source = entry.getKey();
+                InetAddress source = entry.getKey();
+                InetAddress preferred = SystemKeyspace.getPreferredIP(source);
                 Collection<Range<Token>> ranges = entry.getValue();
                 if (logger.isDebugEnabled())
                     logger.debug("Requesting from " + source + " ranges " + StringUtils.join(ranges, ", "));
-                stream.requestRanges(source, keyspaceName, ranges);
+                stream.requestRanges(source, preferred, keyspaceName, ranges);
             }
         }
         StreamResultFuture future = stream.execute();
@@ -1970,12 +1971,14 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     public void onAlive(InetAddress endpoint, EndpointState state)
     {
+        MigrationManager.instance.scheduleSchemaPull(endpoint, state);
+
         if (isClientMode)
             return;
 
         if (tokenMetadata.isMember(endpoint))
         {
-            HintedHandOffManager.instance.scheduleHintDelivery(endpoint);
+            HintedHandOffManager.instance.scheduleHintDelivery(endpoint, true);
             for (IEndpointLifecycleSubscriber subscriber : lifecycleSubscribers)
                 subscriber.onUp(endpoint);
         }
@@ -1984,7 +1987,6 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             for (IEndpointLifecycleSubscriber subscriber : lifecycleSubscribers)
                 subscriber.onJoinCluster(endpoint);
         }
-        MigrationManager.instance.scheduleSchemaPull(endpoint, state);
     }
 
     public void onRemove(InetAddress endpoint)
@@ -2913,8 +2915,9 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         if (logger.isDebugEnabled())
             logger.debug("DECOMMISSIONING");
         startLeaving();
-        setMode(Mode.LEAVING, "sleeping " + RING_DELAY + " ms for pending range setup", true);
-        Thread.sleep(RING_DELAY);
+        long timeout = Math.max(RING_DELAY, BatchlogManager.instance.getBatchlogTimeout());
+        setMode(Mode.LEAVING, "sleeping " + timeout + " ms for batch processing and pending range setup", true);
+        Thread.sleep(timeout);
 
         Runnable finishLeaving = new Runnable()
         {
@@ -2957,13 +2960,29 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             rangesToStream.put(keyspaceName, rangesMM);
         }
 
-        setMode(Mode.LEAVING, "streaming data to other nodes", true);
+        setMode(Mode.LEAVING, "replaying batch log and streaming data to other nodes", true);
 
+        // Start with BatchLog replay, which may create hints but no writes since this is no longer a valid endpoint.
+        Future<?> batchlogReplay = BatchlogManager.instance.startBatchlogReplay();
         Future<StreamState> streamSuccess = streamRanges(rangesToStream);
+
+        // Wait for batch log to complete before streaming hints.
+        logger.debug("waiting for batch log processing.");
+        try
+        {
+            batchlogReplay.get();
+        }
+        catch (ExecutionException | InterruptedException e)
+        {
+            throw new RuntimeException(e);
+        }
+
+        setMode(Mode.LEAVING, "streaming hints to other nodes", true);
+
         Future<StreamState> hintsSuccess = streamHints();
 
         // wait for the transfer runnables to signal the latch.
-        logger.debug("waiting for stream aks.");
+        logger.debug("waiting for stream acks.");
         try
         {
             streamSuccess.get();
@@ -3004,12 +3023,14 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             // stream to the closest peer as chosen by the snitch
             DatabaseDescriptor.getEndpointSnitch().sortByProximity(FBUtilities.getBroadcastAddress(), candidates);
             InetAddress hintsDestinationHost = candidates.get(0);
+            InetAddress preferred = SystemKeyspace.getPreferredIP(hintsDestinationHost);
 
             // stream all hints -- range list will be a singleton of "the entire ring"
             Token token = StorageService.getPartitioner().getMinimumToken();
             List<Range<Token>> ranges = Collections.singletonList(new Range<Token>(token, token));
 
             return new StreamPlan("Hints").transferRanges(hintsDestinationHost,
+                                                          preferred,
                                                                       Keyspace.SYSTEM_KS,
                                                                       ranges,
                                                                       SystemKeyspace.HINTS_CF)
@@ -3164,15 +3185,20 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
                     // stream ranges
                     for (InetAddress address : endpointRanges.keySet())
-                        streamPlan.transferRanges(address, keyspace, endpointRanges.get(address));
+                    {
+                        InetAddress preferred = SystemKeyspace.getPreferredIP(address);
+                        streamPlan.transferRanges(address, preferred, keyspace, endpointRanges.get(address));
+                    }
 
                     // stream requests
                     Multimap<InetAddress, Range<Token>> workMap = RangeStreamer.getWorkMap(rangesToFetchWithPreferredEndpoints);
                     for (InetAddress address : workMap.keySet())
-                        streamPlan.requestRanges(address, keyspace, workMap.get(address));
+                    {
+                        InetAddress preferred = SystemKeyspace.getPreferredIP(address);
+                        streamPlan.requestRanges(address, preferred, keyspace, workMap.get(address));
+                    }
 
-                    if (logger.isDebugEnabled())
-                        logger.debug("Keyspace {}: work map {}.", keyspace, workMap);
+                    logger.debug("Keyspace {}: work map {}.", keyspace, workMap);
                 }
             }
         }
@@ -3630,9 +3656,10 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             {
                 final List<Range<Token>> ranges = rangesEntry.getValue();
                 final InetAddress newEndpoint = rangesEntry.getKey();
+                final InetAddress preferred = SystemKeyspace.getPreferredIP(newEndpoint);
 
                 // TODO each call to transferRanges re-flushes, this is potentially a lot of waste
-                streamPlan.transferRanges(newEndpoint, keyspaceName, ranges);
+                streamPlan.transferRanges(newEndpoint, preferred, keyspaceName, ranges);
             }
         }
         return streamPlan.execute();
